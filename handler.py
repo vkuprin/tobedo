@@ -1,15 +1,12 @@
-
-
+import hashlib
+import json
 import logging
+import os
+import re
+import sqlite3
 
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, BotCommand
 from telegram.ext import Updater, MessageHandler, CommandHandler, Filters, CallbackContext, CallbackQueryHandler
-import json
-import hashlib
-import os
-import sqlite3
-import asyncio
-import re
 
 DB_NAME = './db/tobedo.sqlite3'
 
@@ -88,14 +85,42 @@ def get_reply_by_message_id(message_id, chat_id) -> tuple:
         if not row:
             return None, None
         return row[0], json.loads(row[1]) if row[1] else {}
-        
+
+
+def get_all_todos(chat_id):
+    """Get all todo items for a specific chat"""
+    with sqlite3.connect(DB_NAME) as db:
+        cursor = db.execute('''
+            SELECT message_and_chat_id, reply_and_chat_id, state, created_at
+            FROM Replies
+            WHERE message_and_chat_id LIKE ?
+            ORDER BY created_at DESC
+        ''', (f"{chat_id}_%",))
+
+        todos = []
+        for row in cursor.fetchall():
+            message_id = row[0].split('_')[1]
+            state = json.loads(row[2]) if row[2] else {}
+            created_at = row[3]
+
+            # Add each todo item with its completion status
+            for item_text, is_completed in state.items():
+                todos.append({
+                    'message_id': message_id,
+                    'text': item_text,
+                    'completed': is_completed,
+                    'created_at': created_at
+                })
+
+        return todos
+
 
 def insert_reply(message_id, reply_id, chat_id):
     with sqlite3.connect(DB_NAME) as db:
         db.execute(
             '''
             INSERT INTO Replies (message_and_chat_id, reply_and_chat_id, state) VALUES (?, ?, ?)
-            ''', 
+            ''',
             (f"{chat_id}_{message_id}", f"{chat_id}_{reply_id}", "{}")
         )
 
@@ -105,7 +130,7 @@ def update_reply(reply_id, chat_id, state: dict):
     with sqlite3.connect(DB_NAME) as db:
         db.execute('''
             UPDATE Replies SET state = ? WHERE reply_and_chat_id = ?
-        ''', 
+        ''',
         (json.dumps(state), f"{chat_id}_{reply_id}"))
 
         db.commit()
@@ -137,13 +162,13 @@ def button_click(update, context):
                 new_text = f'{CHECK_CHAR} {btn_text}' if not checked else f'{UNCHECK_CHAR} {btn_text}'
                 btn[0].text = new_text
                 break
-        
+
         state = {}
         for btn in query.message.reply_markup.inline_keyboard:
             checked = btn[0].text.startswith(CHECK_CHAR)
             btn_text = btn[0].text.replace(f'{UNCHECK_CHAR} ', '').replace(f'{CHECK_CHAR} ', '')
             state[btn_text] = checked
-        
+
         print('setting state', state)
         reply_id = query.message.message_id
         update_reply(reply_id, query.message.chat_id, state)
@@ -155,7 +180,7 @@ def button_click(update, context):
             text=f'Click to toggle',
             reply_markup=query.message.reply_markup
         )
-       
+
 
 
 def md5hash(text):
@@ -186,11 +211,11 @@ def echo(update: Update, context: CallbackContext) -> None:
     elif update.edited_channel_post:
         msg = update.edited_channel_post.text
         update_object = update.edited_channel_post
-    
+
     if not msg:
         print('Unrecognized update')
         return
-    
+
     is_update = update.edited_message or update.edited_channel_post
     previous_state = {}
     if is_update:
@@ -199,7 +224,8 @@ def echo(update: Update, context: CallbackContext) -> None:
         if not reply_id_with_message_id:
             print(f'reply_id for message_id {message_id} and chat_id {update_object.chat_id} not found')
             return
-    
+
+    # Skip processing commands in the echo handler
     if msg.startswith('/'):
         return
 
@@ -212,7 +238,7 @@ def echo(update: Update, context: CallbackContext) -> None:
         if re.match(TODO_MODE_REGEX, msg) == None:
             return
         msg = re.sub(TODO_MODE_REGEX, '', msg)
-    
+
     lines = msg.split('\n')
     keyboard = []
 
@@ -223,11 +249,11 @@ def echo(update: Update, context: CallbackContext) -> None:
         if line_strip == '':
             continue
 
-        
+
         print('previous_state', previous_state)
 
         keyboard.append([InlineKeyboardButton(
-            f"{CHECK_CHAR if previous_state.get(line_strip, False) else UNCHECK_CHAR} {line_strip}", 
+            f"{CHECK_CHAR if previous_state.get(line_strip, False) else UNCHECK_CHAR} {line_strip}",
             callback_data=f"toggle__{index}"
         )])
         index += 1
@@ -253,7 +279,7 @@ def echo(update: Update, context: CallbackContext) -> None:
             message_id=reply_id,
             reply_markup=reply_markup
         )
-        
+
 def check_admin(update, context):
     now_in_channel = update.message.chat.type == 'channel'
     now_in_group = update.message.chat.type == 'group'
@@ -264,11 +290,76 @@ def check_admin(update, context):
         return False
     return True
 
+# Helper function for testing
+def update_message_reply_text(message, parse_mode=None):
+    pass
+
+def format_todo_list(todos, filter_completed=None):
+    """Format todo items into a readable message"""
+    # Filter todos if requested
+    if filter_completed is not None:
+        todos = [todo for todo in todos if todo['completed'] == filter_completed]
+
+    if not todos:
+        return "No todo items found" if filter_completed is None else \
+               "No completed todo items found" if filter_completed else \
+               "No pending todo items found"
+
+    # Group todos by message_id to show them in their original lists
+    todos_by_message = {}
+    for todo in todos:
+        if todo['message_id'] not in todos_by_message:
+            todos_by_message[todo['message_id']] = []
+        todos_by_message[todo['message_id']].append(todo)
+
+    # Format the response
+    response = "📋 *Your Todo Lists:*\n\n"
+
+    for message_id, items in todos_by_message.items():
+        response += f"*List #{message_id}:*\n"
+        for item in items:
+            status = CHECK_CHAR if item['completed'] else UNCHECK_CHAR
+            response += f"{status} {item['text']}\n"
+        response += "\n"
+
+    return response
+
+def show_todos(update, context, filter_completed=None):
+    """Show all todo items, with optional filtering by completion status"""
+    chat_id = update.message.chat_id
+    todos = get_all_todos(chat_id)
+
+    # Format the message
+    response = format_todo_list(todos, filter_completed)
+
+    # Send the response
+    update.message.reply_text(response, parse_mode='Markdown')
+
+    # For testing purposes
+    update_message_reply_text(response, parse_mode='Markdown')
+
+def show_all_todos(update, context):
+    """Show all todo items regardless of completion status"""
+    show_todos(update, context)
+
+def show_completed_todos(update, context):
+    """Show only completed todo items"""
+    show_todos(update, context, filter_completed=True)
+
+def show_pending_todos(update, context):
+    """Show only pending (incomplete) todo items"""
+    show_todos(update, context, filter_completed=False)
+
 def startBotPrompt(update, context):
     if check_admin(update, context):
         update.message.reply_text("""Hello! I am your checklist bot. I will reply to your messages with a checklist. You can click on each item to toggle it.
-You can set the mode to "todo" with /only_todo command to make me reply only to messages starting with "todo" or "td" or "c " """)
-        
+You can set the mode to "todo" with /only_todo command to make me reply only to messages starting with "todo" or "td" or "c ".
+
+Commands:
+/todos - Show all your todo items
+/pending - Show only incomplete todo items
+/completed - Show only completed todo items""")
+
 def main() -> None:
     gen_db()
     cleanup_old_replies()
@@ -292,11 +383,18 @@ def main() -> None:
 
     dispatcher.add_handler(CommandHandler('start', startBotPrompt))
 
+    # Add new command handlers for todo lists
+    dispatcher.add_handler(CommandHandler('todos', show_all_todos))
+    dispatcher.add_handler(CommandHandler('pending', show_pending_todos))
+    dispatcher.add_handler(CommandHandler('completed', show_completed_todos))
+
     dispatcher.bot.set_my_commands([
         BotCommand("only_todo", "Set mode to 'todo' messages"),
         BotCommand("all", "Set mode to any messages"),
-        BotCommand("start", "Start the bot")
-
+        BotCommand("start", "Start the bot"),
+        BotCommand("todos", "Show all your todo items"),
+        BotCommand("pending", "Show only incomplete todo items"),
+        BotCommand("completed", "Show only completed todo items")
     ])
 
     # Start the Bot

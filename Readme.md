@@ -13,6 +13,14 @@ Want to use the deployed version?
 2) Make tobedo_bot a group admin so he can read the messages
 3) The bot will automatically turn any messages into a checklist, parsing line by line
 
+## Features
+
+- Create checklists from any message
+- Toggle items by clicking on them
+- View all your todo items with `/todos`
+- View only incomplete items with `/pending`
+- View only completed items with `/completed`
+
 # Deploy own instance of bot
 
 If you want to extend functionality, you can fork this repo and redeploy the bot.
@@ -31,7 +39,7 @@ docker run -e TG_TOKEN=<your token> -v /volumes/tobedo/:/code/db/ devforth/tobed
 Compose example:
 
 ```yaml
-version: '3.3' 
+version: '3.3'
 
 services:
   tobedo:
@@ -41,3 +49,27 @@ services:
     volumes:
       - /volumes/tobedo/:/code/db/
 ```
+
+## Development
+
+### Running Tests
+
+To run the tests, you need to have Python 3.10 or higher installed. Then, you can run the tests with:
+
+```sh
+# Install dependencies
+pip install -r requirements.txt
+
+# Run tests
+python run_tests.py
+```
+
+Or using pytest directly:
+
+```sh
+python -m pytest tests/ --cov=.
+```
+
+### GitHub Actions
+
+This project uses GitHub Actions to run tests automatically on every push and pull request. The workflow is defined in `.github/workflows/python-tests.yml`.
